@@ -328,7 +328,7 @@ inline TargetProfile makeSnapdragon8EliteProfile() noexcept {
     //   an 8B-stride loop = 96B (safe, within same page).  For 128B-stride
     //   (strided_16), adaptiveDist clamps to TC/2 iterations ahead, which
     //   is exactly enough to hide L2 latency without overshooting L1.
-    .pf_lookahead_iters  = 12,
+    .pf_lookahead_iters  = 8,
     .use_prfm_pldl1keep  = true,
     .use_prfm_pldl2keep  = true,
     .use_prfm_pstl1keep  = true,
