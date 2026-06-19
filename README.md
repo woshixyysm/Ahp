@@ -60,7 +60,7 @@ make test_ubsan  # UBSanitizer
 
 ## 已知问题与缓解措施
 
-### 问题 1：LLVM SVE tail-folding 死循环（README 原描述）
+### 问题 1：LLVM SVE tail-folding 死循环
 
 **根因**：`LoopVectorizer` 在 AArch64 + SVE 上对 low/dynamic trip count 的处理：
 
