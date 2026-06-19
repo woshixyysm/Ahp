@@ -244,7 +244,7 @@ inline TargetProfile makeAmpereAltraProfile() noexcept {
     .budget = PrefetchBudget{
       .per_function    = 16,
       .per_loop        = 4,
-      .min_dist_bytes  = 64,
+      .min_dist_bytes  = 128,
       .max_dist_bytes  = 4096,
       .per_loop_gather = 2,
     },
