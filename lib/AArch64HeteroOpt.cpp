@@ -159,6 +159,9 @@ static bool sveGuardFires(const Loop *L, const LoopInfo &LI,
 // ==========================================================================
 // §3  Strided-access helpers
 // ==========================================================================
+/// Stride of Ptr in bytes. SCEV already scales GEP indices by the element
+/// size, so the step of an affine AddRec is a byte count -- the same unit as
+/// the thresholds below and as the offsets emitPrefetch() builds.
 static int64_t constStride(Value *Ptr, ScalarEvolution &SE, const Loop *L) {
   const auto *AR = dyn_cast<SCEVAddRecExpr>(SE.getSCEV(Ptr));
   if (!AR || !AR->isAffine()) return 0;
@@ -563,21 +566,19 @@ AArch64HeteroOptPass::run(Function &F, FunctionAnalysisManager &FAM) {
         int64_t Dist = adaptiveDist(std::abs(Stride), TC, P);
 
         // Random-access guard: if the trip count is known and the total
-        // working set (TC × |stride|) fits in L1, the HW prefetcher and
-        // OOO window will handle it.  SW prefetch adds overhead for no gain.
+        // working set (TC × |stride|) fits in half of L1, the HW prefetcher and
+        // the OOO window will handle it and SW prefetch only costs AGU slots.
         //
-        // Threshold: Oryon L1D = 64 KB.  If TC × |stride| < L1D_size/2,
-        // the entire working set fits comfortably and SW prefetch hurts.
-        // This is the source of the random_access +6% regression:
-        // arr[idx[i]] has loop-variant GEP but the outer *idx* traversal
-        // is sequential with stride=8B.  SCEV sees it as Streaming (Abs=8,
-        // !outer → skip) but on some compilation paths the inner GEP's
-        // pointer gets a different SCEV expression and slips through with
-        // Loc≥0.  The working-set guard catches it unconditionally.
+        // The comparison must be done without forming the product: TC is an
+        // upper bound that is routinely around 2^63 for a dynamic trip count,
+        // and computing `(int64_t)TC * |stride|` overflowed to 0, which read as
+        // "working set fits in cache" and silently disabled the pass for every
+        // loop whose trip count the compiler could not pin down.
         {
-          uint32_t L1KB = P.primary.cache.l1d_size_kb;
-          int64_t WS = (TC > 0) ? (int64_t)TC * std::abs(Stride) : INT64_MAX;
-          if (WS < (int64_t)(L1KB * 1024 / 2)) {
+          const int64_t AbsStride = std::abs(Stride);
+          const uint64_t Limit =
+              (uint64_t)P.primary.cache.l1d_size_kb * 1024u / 2u;
+          if (TC > 0 && AbsStride > 0 && TC <= (Limit - 1) / (uint64_t)AbsStride) {
             ++NumLoadsSkippedWorkingSet;
             continue;
           }

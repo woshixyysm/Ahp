@@ -83,6 +83,32 @@ $ make test
 
 独立测试不需要 LLVM：`test_syntax.cpp` 自带一个最小的 `llvm::StringRef` 桩。桩模式必须把 `AARCH64_HETERO_HAS_REAL_LLVM` 显式定义为 **0**（该宏的含义是"有真 LLVM 头文件可用"），否则在装了 LLVM 的机器上会和真头文件撞车——只有没装 LLVM 的机器才编得过，这个坑已经修掉。
 
+### 验证插件本体（不依赖 cmake）
+
+`LLVMConfig.cmake` 在部分发行版（如 Termux 的 `llvm` 包）里会引用缺失文件，configure 直接失败。单个 .cpp 用 `llvm-config` 编更省事：
+
+```bash
+clang++ -DHAS_LLVM_HEADERS=1 -Iinclude -fPIC -shared \
+        $(llvm-config --cxxflags) -std=c++20 \
+        lib/AArch64HeteroOpt.cpp -o AArch64HeteroOpt.so \
+        $(llvm-config --ldflags) -L$PREFIX/lib -lLLVM-21
+```
+
+两个必须注意的点：
+
+- `llvm-config --cxxflags` 自带 `-std=c++17`，所以 `-std=c++20` 必须写在它**后面**，否则 `std::string_view::starts_with` 不存在。
+- 必须显式 `-lLLVM-21`。不链接的话 .so 里是未定义符号，`dlopen` 会失败在 `llvm::DebugFlag`（宿主 clang 不导出 LLVM 符号）。
+
+加载验证（`-fno-vectorize` 让循环保持标量，否则会被 `isAnyVectorized` 整循环跳过）：
+
+```bash
+clang -mcpu=oryon-1 -O2 -fno-vectorize -fno-slp-vectorize \
+      -fpass-plugin=./AArch64HeteroOpt.so -S -emit-llvm test/sweep.c -o sweep.ll
+awk '/^define/{n=$0} /call void @llvm.prefetch/{print n}' sweep.ll | uniq -c
+```
+
+`test/sweep.c` 是同一段循环的步长扫描（8/16/64/72/128/520 字节）：前三者应得 locality 1，后三者得 locality 3。
+
 CI：standalone（x86-64，ASan/UBSan）、llvm-plugin（arm，Release/Debug/RelWithDebInfo + clang-tidy）、sanitized-plugin、tag 发布。
 
 ## 版本与许可
