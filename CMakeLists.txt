@@ -43,12 +43,19 @@ if(NOT AARCH64_GCC_INCLUDES)
   file(GLOB _gcc_dirs
     "/usr/lib/gcc-cross/aarch64-linux-gnu/*/include"
     "/usr/lib/gcc/aarch64-linux-gnu/*/include")
-  list(GET _gcc_dirs 0 AARCH64_GCC_INCLUDES)
+  # Guard the GET: on a host with no aarch64 cross GCC the glob is empty and
+  # list(GET ...) is a hard configure error, which made the whole project
+  # unconfigurable on native aarch64 machines.
+  if(_gcc_dirs)
+    list(GET _gcc_dirs 0 AARCH64_GCC_INCLUDES)
+  endif()
 endif()
 
 if(NOT AARCH64_STDCXX_INCLUDES AND AARCH64_SYSROOT)
   file(GLOB _cxx_dirs "${AARCH64_SYSROOT}/include/c++/*")
-  list(GET _cxx_dirs 0 _cxx_base)
+  if(_cxx_dirs)
+    list(GET _cxx_dirs 0 _cxx_base)
+  endif()
   if(_cxx_base)
     set(AARCH64_STDCXX_INCLUDES
         "${_cxx_base}"

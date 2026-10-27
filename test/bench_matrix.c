@@ -95,39 +95,42 @@ int main(int argc, char **argv) {
   }
 
   /* CSR: 5 non-zeros per row, column indices strided by 97 to defeat
-     hardware stream detection (a realistic sparse pattern). */
-  int nz = N * 5;
-  int *rowptr = malloc(sizeof(int) * (N + 1));
+     hardware stream detection (a realistic sparse pattern). The row count is
+     independent of N: SpMV only becomes measurable past ~1e6 non-zeros. */
+  const int SP = (argc > 3) ? atoi(argv[3]) : 200000;
+  int nz = SP * 5;
+  int *rowptr = malloc(sizeof(int) * (SP + 1));
   int *col = malloc(sizeof(int) * nz);
-  double *val = xalloc(nz), *x = xalloc(N), *y = xalloc(N);
-  for (int i = 0; i <= N; i++) rowptr[i] = i * 5;
-  for (int i = 0; i < N; i++)
+  double *val = xalloc(nz), *x = xalloc(SP), *y = xalloc(SP);
+  if (!rowptr || !col) { fprintf(stderr, "oom\n"); return 1; }
+  for (int i = 0; i <= SP; i++) rowptr[i] = i * 5;
+  for (int i = 0; i < SP; i++)
     for (int j = 0; j < 5; j++) {
-      col[i * 5 + j] = (i * 97 + j * 13) % N;
+      col[i * 5 + j] = (int)(((long long)i * 97 + j * 13) % SP);
       val[i * 5 + j] = 1.0 / (j + 1);
     }
-  for (int i = 0; i < N; i++) x[i] = 1.0 + i * 1e-3;
+  for (int i = 0; i < SP; i++) x[i] = 1.0 + i * 1e-3;
 
   double t1 = bench(dgemm_ijk, A, B, C, N, reps);
   double t2 = bench(dgemm_ikj, A, B, C, N, reps);
 
   double best_spmv = 1e30, sink = 0;
-  const int spmv_iters = 200;   /* one SpMV is microseconds; loop it */
+  const int spmv_iters = 20;
   for (int r = 0; r < reps; r++) {
     double t0 = now_ms();
     for (int it = 0; it < spmv_iters; it++) {
-      spmv(rowptr, col, val, x, y, N);
-      x[it % N] += 1e-9;        /* keep iterations distinct */
+      spmv(rowptr, col, val, x, y, SP);
+      x[it % SP] += 1e-9;       /* keep iterations distinct */
     }
     double dt = (now_ms() - t0) / spmv_iters;
     if (dt < best_spmv) best_spmv = dt;
   }
-  for (int i = 0; i < N; i++) sink += y[i];
+  for (int i = 0; i < SP; i++) sink += y[i];
 
   double gflops = 2.0 * (double)N * N * N / (t1 * 1e6);
-  printf("N=%-5d dgemm_ijk %8.2f ms   dgemm_ikj %8.2f ms   spmv %7.3f ms   "
-         "[%.2f GFLOP/s]  chk=%.6g\n",
-         N, t1, t2, best_spmv, gflops, (t1 + t2) / 1e9 + sink * 1e-18);
+  printf("N=%-5d dgemm_ijk %8.2f ms   dgemm_ikj %8.2f ms   "
+         "spmv(%d rows) %7.3f ms   [%.2f GFLOP/s]  chk=%.6g\n",
+         N, t1, t2, SP, best_spmv, gflops, (t1 + t2) / 1e9 + sink * 1e-18);
 
   free(A); free(B); free(C); free(rowptr); free(col); free(val);
   free(x); free(y);
