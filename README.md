@@ -111,6 +111,23 @@ awk '/^define/{n=$0} /call void @llvm.prefetch/{print n}' sweep.ll | uniq -c
 
 CI：standalone（x86-64，ASan/UBSan）、llvm-plugin（arm，Release/Debug/RelWithDebInfo + clang-tidy）、sanitized-plugin、tag 发布。
 
+## 实测
+
+设备：骁龙 8 Elite（Oryon，无 SVE），`-O2 -mcpu=oryon-1`，矩阵 640×640 double。
+`test/bench_matrix.c`，base 与插件版交替跑三轮，取每项最小值。
+
+| 用例 | base | 加插件 | 变化 |
+|---|---|---|---|
+| `dgemm_ijk`（内层 k，B 步长 5120 B，标量 FP 归约） | 238.0 ms | 192.8 ms | **1.23×** |
+| `dgemm_ikj`（内层 j，单位步长，已被向量化） | 41.3 ms | 42.7 ms | −3.4% |
+| `spmv`（CSR，每行 5 个非零，列号 ×97 打散） | 2 µs/次 | 2 µs/次 | 噪声内，无结论 |
+
+结论：**只有大步长、且没被向量化的循环真受益**（1.23×），这和 pass 的设计一致。单位步长的向量化循环本来就被 `isAnyVectorized` 跳过整循环，但它的外层/中层循环仍会被注入预取，代价是 3~4%。
+
+把两边都加 `-fno-unroll-loops` 再比（排除 `LaneHintPass` 的 unroll 提示灌水）：238.98 → 194.02 ms，仍是 1.23×，说明**这点收益来自预取本身，unroll 提示没测出额外贡献**。
+
+SpMV 那条测不出来是因为规模太小（3200 个非零 = 2 µs），要在有意义的规模上评估 gather 预取，得换一个百万级非零的矩阵。
+
 ## 版本与许可
 
 当前 `0.4.0`（见 `include/AArch64Features.h` 的 `AHP_VERSION_*`）。
