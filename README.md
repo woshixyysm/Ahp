@@ -1,88 +1,92 @@
 # Ahp — AArch64 Hetero-Opt LLVM Pass
 
-针对 LLVM AArch64/Arm64 CPU 的生产级异构优化 Pass。
+针对 AArch64 的 LLVM New Pass Manager 插件：按目标微架构决定**要不要**注入软件预取、注入到哪一级缓存、多远。
 
----
+## 它做什么
 
-## Ahp 是什么？
+两个 pass，两个扩展点：
 
-Ahp 是一个 LLVM New Pass Manager 插件，针对以下 AArch64 微架构注入软件预取（SW prefetch）：
+| Pass | 扩展点 | 动作 |
+|------|--------|------|
+| `AArch64LaneHintPass` | `LoopOptimizerEndEP`（向量化之前） | 给 FP 归约循环注入 `llvm.loop.unroll.count` / `llvm.loop.interleave.count`，拆开累加器依赖链 |
+| `AArch64HeteroOptPass` | `OptimizerLastEP`（向量化之后） | 只注入 `llvm.prefetch`，不加新 load，不改 loop metadata |
 
-| 目标 | CPU 字符串 | 特性 |
-|------|------------|------|
-| Ampere Altra / AmpereOne | `ampere1`, `ampere1a` | ARMv8.6 + SVE，HW 预取强，禁用 SW 预取 |
-| Qualcomm Oryon (Snapdragon 8 Elite) | `oryon-1`, `oryon-2` | ARMv9.2 + SVE2 + SME，P+E 异构，启用 SW 预取 |
-| Arm Neoverse N1/N2/V1 | `neoverse-n1/n2/v1` | 服务器核心，映射到 Ampere 策略 |
-| Arm Cortex-X4 / Apple M4 | `cortex-x4`, `apple-m4` | 高 IPC 大核，映射到 Oryon 策略 |
+预取插在**所服务的 load 之前**（`IRBuilder` 建在 load 位置）。这是为了回避支配关系问题：向量化后指针 GEP 在循环体内，往 preheader 插会违反支配。
 
----
+## 目标
 
-## 使用方法
+| 目标 | CPU 字符串 | SW 预取 | 说明 |
+|------|-----------|---------|------|
+| Ampere Altra / AmpereOne | `ampere1`, `ampere1a` | 关 | 硬件预取强，流式访问交给 HW |
+| Neoverse N1/N2/V1 | `neoverse-n1/n2/v1` | 关 | 映射到 Ampere 策略 |
+| Qualcomm Oryon | `oryon-1`, `oryon-2` | 开 | P+E 异构，按 4 个 FP load unit 调参 |
+| Cortex-X4 / Apple M4 | `cortex-x4`, `apple-m4` | 开 | 映射到 Oryon 策略 |
+| 未知 CPU | 其它 | 关 | 不知道微架构就不猜，绝不默认开 |
+
+> **Oryon 没有 SVE/SVE2，也没有 SME。** LLVM 自己的 `oryon-1` 特性表是 NEON / AES / SHA2 / SM4 加若干 fusion 开关。所以 profile 里 `march_str` 写的是 `"oryon-1"` 而不是一串 `+sve2+sme`——照后者编译出来的指令这条核心执行不了。
+
+## 使用
 
 ```bash
 # 构建插件（需要 LLVM 18+ dev 头文件）
 cmake -B build -DLLVM_DIR=$(llvm-config --cmakedir) .
 cmake --build build
 
-# 手动挂载（Oryon 目标）
+# 挂载
 clang -mcpu=oryon-1 -O2 -fpass-plugin=./AArch64HeteroOpt.so your_code.c -o out
 
-# 独立测试（不需要 LLVM）
+# 独立测试（不需要 LLVM，34 项检查）
 make test
 make test_asan   # AddressSanitizer
-make test_ubsan  # UBSanitizer
+make test_ubsan  # UndefinedBehaviorSanitizer
 ```
 
----
+调试：`-mllvm -debug-only=aarch64-hetero-opt`（需要 debug 版 LLVM）。
 
 ## 预取策略
 
-### 预取局部性决策表
+### 局部性
 
-| 访问语义 | Oryon locality | Ampere locality | 说明 |
-|----------|---------------|-----------------|------|
-| HighReuse（含外层循环的内层，大步长） | 3 (PLDL1KEEP) | 2 (PLDL2KEEP) | Oryon 拉入 L1，Ampere 限于 L2 |
-| ModerateReuse（一般步长） | 2 (PLDL2KEEP) | 2 (PLDL2KEEP) | 两者均使用 L2 |
-| Streaming（小步长，无外层循环） | 1 (PLDL1STRM) | -1（跳过） | Ampere HW 预取负责流式访问 |
-| Invariant（循环不变地址） | -1（跳过） | -1（跳过） | 已在 L1 中 |
-| Unknown（变步长/SCEV 失败） | -1（跳过） | -1（跳过） | 无法预测 |
+locality 值沿用 `llvm.prefetch` 的约定：3=PLDL1KEEP、2=PLDL2KEEP、1=PLDL1STRM、-1=不注入。
 
-### 预取预算（避免 AGU/ICache 压力）
+| 访问语义 | Oryon | Ampere | 判据 |
+|----------|-------|--------|------|
+| HighReuse | 3 | 2 | 含外层循环，大步长 → 跨外层迭代复用 |
+| ModReuse | 3 | 2 | 64B < 步长 ≤ 512B，硬件预取器的盲区 |
+| Streaming | 1 | -1 | 步长 ≤ 64B 且无外层循环，HW 预取已足够 |
+| Invariant | -1 | -1 | SCEV 判定循环不变，已在缓存里 |
+| Unknown | -1 | -1 | 步长算不出来，不猜 |
 
-| 目标 | 每函数预算 | 每循环预算 | 最大预取距离 |
-|------|-----------|-----------|------------|
-| Ampere | 16 | 4 | 4096 B |
-| Oryon  | 24 | 6 | 8192 B |
+### 预算
 
----
+| 目标 | 每函数 | 每循环 | 最大预取距离 | gather 每循环 |
+|------|-------|-------|------------|--------------|
+| Ampere | 16 | 4 | 4096 B | 2 |
+| Oryon | 32 | 8 | 8192 B | 4 |
 
-## 构建系统选项
+预取距离不是固定的 `lookahead × stride`，而是 `clamp(min(lookahead, TC/2) × stride, min_dist, max_dist)`。`TC/2` 防止短循环把预取打出数组尾部。
 
-| CMake 选项 | 说明 | 默认 |
-|------------|------|------|
-| `USE_SANITIZERS` | `address` / `undefined` / `thread` | 关 |
-| `ENABLE_LTO` | 开启链接时优化 | 关 |
-| `CLANG_TIDY` | clang-tidy 可执行路径（自动检测） | 自动 |
+另有工作集守卫：若 `TC × |stride|` 小于 L1D 的一半，整个工作集本来就在缓存里，直接跳过。
 
----
+## 它不做什么
 
-## CI 矩阵
+- **不处理指针追逐**（链表、树、探测表）：`classifyLoad()` 只认仿射 SCEV，非仿射一律跳过。`test/test_verify.cpp` 里那几个指针追逐用例目前是**不被优化**的对照样例。
+- **不碰已向量化的循环**：`isAnyVectorized()` 命中就整循环跳过，避免在 vector GEP 上插标量预取。
+- **不改 loop metadata 于向量化之后**：`setLoopID` 只在 `LoopOptimizerEndEP` 用。
 
-| Job | Runner | 说明 |
-|-----|--------|------|
-| `standalone` | ubuntu-24.04 (x86-64) | 无 LLVM 独立测试 + ASan + UBSan |
-| `llvm-plugin` | ubuntu-24.04-arm | Release/Debug/RelWithDebInfo + clang-tidy |
-| `sanitized-plugin` | ubuntu-24.04-arm | ASan / UBSan 插件构建 |
-| `build-and-release` | ubuntu-24.04-arm | tag push → GitHub Release |
+## 验证
 
----
+```
+$ make test
+=== All standalone tests passed ===
+```
 
-## 版本
+独立测试不需要 LLVM：`test_syntax.cpp` 自带一个最小的 `llvm::StringRef` 桩。桩模式必须把 `AARCH64_HETERO_HAS_REAL_LLVM` 显式定义为 **0**（该宏的含义是"有真 LLVM 头文件可用"），否则在装了 LLVM 的机器上会和真头文件撞车——只有没装 LLVM 的机器才编得过，这个坑已经修掉。
 
-当前版本：`0.4.0`（见 `AArch64Features.h` 中的 `AHP_VERSION_*` 宏）
+CI：standalone（x86-64，ASan/UBSan）、llvm-plugin（arm，Release/Debug/RelWithDebInfo + clang-tidy）、sanitized-plugin、tag 发布。
 
----
+## 版本与许可
 
-## 许可证
+当前 `0.4.0`（见 `include/AArch64Features.h` 的 `AHP_VERSION_*`）。
 
-Apache-2.0 WITH LLVM-exception（见 `LICENSE`）
+Apache-2.0 WITH LLVM-exception，见 `LICENSE`。

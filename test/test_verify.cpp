@@ -90,9 +90,9 @@ void mat_mul_kernel(float *__restrict__ C,
 }
 
 // ── 4. Linked-list traversal – indirect pointer chase ────────────────────────
-// Expected: AccessPattern::Indirect in AArch64PrefetchAnalysis.
-// The function-level pass (AArch64HeteroOptPass) skips non-affine SCEVs;
-// the loop-level pass (AArch64PrefetchInjector) handles this pattern.
+// Not handled: loads are classified only when their pointer has an affine
+// SCEV, so pointer-chase streams are deliberately skipped. This stays as a
+// benchmark for a future loop-level variant.
 struct Node { Node *next; int value; };
 
 int list_sum(Node *head) {

@@ -78,8 +78,8 @@ static void test_oryon_profile() {
   CHECK(p.primary.cache.l2_size_kb       == 512u,                       "Oryon P L2=512KB");
   CHECK(p.primary.cache.l3_size_mb       == 12u,                        "Oryon L3=12MB");
   CHECK(p.primary.pipeline.issue_width   == 10u,                        "Oryon P IW=10");
-  CHECK(p.primary.pipeline.has_sme       == true,                       "Oryon P has SME");
-  CHECK(p.primary.pipeline.has_sve2      == true,                       "Oryon P has SVE2");
+  CHECK(p.primary.pipeline.has_sme       == false,                      "Oryon P has no SME");
+  CHECK(p.primary.pipeline.has_sve2      == false,                      "Oryon P has no SVE2");
   CHECK(p.inject_sw_prefetch             == true,                       "Oryon SW PF on");
   CHECK(p.pf_lookahead_iters             == 8u,                         "Oryon lookahead=8");
   CHECK(p.use_prfm_pldl1keep             == true,                       "Oryon pldl1keep");
@@ -91,7 +91,7 @@ static void test_oryon_profile() {
   CHECK(p.budget.per_loop_gather         == 4u,                         "Oryon gather budget=4");
   CHECK(p.budget.max_dist_bytes          == 8192u,                      "Oryon max_dist=8192");
   // SVE guard: InnerOnly — SpMV fix
-  CHECK(p.sve_guard == SveGuardMode::InnerOnly,                         "Oryon SVE guard InnerOnly");
+  CHECK(p.sve_guard == SveGuardMode::Disabled,                          "Oryon SVE guard Disabled");
   // Gather: enabled (NontemporalHint at minimum)
   CHECK(p.gather_pf_mode != GatherPrefetchMode::Disabled,               "Oryon gather enabled");
   CHECK(p.gather_locality == 3u,                                        "Oryon gather loc=3 (L1)");
@@ -107,16 +107,17 @@ static void test_oryon_profile() {
 // SVE guard mode semantics
 // ---------------------------------------------------------------------------
 static void test_sve_guard_semantics() {
-  // The critical fix: InnerOnly must NOT skip scalar loops with dynamic TC.
-  // We can't invoke real SCEV here, but we can verify the enum values and
-  // that Ampere stays Disabled while Oryon uses InnerOnly.
+  // The guard is off everywhere: the AArch64 tail-folding livelock it was
+  // written for does not exist (a tail-folded loop exits on lane 0 of the
+  // active-lane mask, i.e. on `i < n`), and no shipped profile targets a CPU
+  // where scalable-vector loops can even be generated.
   auto ampere = makeAmpereAltraProfile();
   auto oryon  = makeSnapdragon8EliteProfile();
 
   CHECK(ampere.sve_guard == SveGuardMode::Disabled,
-        "Ampere: Disabled (no SVE2, no risk)");
-  CHECK(oryon.sve_guard  == SveGuardMode::InnerOnly,
-        "Oryon: InnerOnly (fix for SpMV 34% regression)");
+        "Ampere: Disabled");
+  CHECK(oryon.sve_guard  == SveGuardMode::Disabled,
+        "Oryon: Disabled (no SVE on Oryon either)");
 
   // Full guard is reserved for when LLVM upstream fixes the bug.
   // Neither target should use it by default.

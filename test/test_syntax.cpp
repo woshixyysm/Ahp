@@ -8,8 +8,11 @@
 //      Uses the real llvm::StringRef. All headers compile normally.
 //
 //   B) Without LLVM (standalone Makefile build):
-//      Provides a minimal llvm::StringRef stub and enables
-//      AARCH64_HETERO_HAS_REAL_LLVM=1 so detectProfile() is compiled.
+//      Provides a minimal llvm::StringRef stub and sets
+//      AARCH64_HETERO_HAS_REAL_LLVM=0 so the header does not include the real
+//      one. (0, not 1: the macro means "real LLVM headers are available".
+//      Setting it to 1 here used to compile only on machines that had no LLVM
+//      headers installed, and break on every machine that did.)
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,7 +23,7 @@
 
 // These macros must be set before including AArch64TargetProfileLLVM.h so
 // that the header uses our stub instead of trying to find llvm/ADT/StringRef.h.
-#define AARCH64_HETERO_HAS_REAL_LLVM 1
+#define AARCH64_HETERO_HAS_REAL_LLVM 0
 
 #include <cstddef>
 #include <string_view>
@@ -61,8 +64,7 @@ public:
 #include "AArch64TargetProfileLLVM.h"
 #include "AArch64Opcodes.h"
 #include "AArch64Features.h"
-// AArch64HeteroOpt.h and AArch64PrefetchAnalysis.h require real LLVM IR
-// types; skip them in stub mode.
+// AArch64HeteroOpt.h requires real LLVM IR types; skip it in stub mode.
 
 // ---------------------------------------------------------------------------
 // Mode A: real LLVM headers available – include everything normally.
@@ -75,7 +77,6 @@ public:
 #include "AArch64Opcodes.h"
 #include "AArch64Features.h"
 #include "AArch64HeteroOpt.h"
-// AArch64PrefetchAnalysis.h included transitively.
 
 #endif // HAS_LLVM_HEADERS
 
@@ -127,11 +128,11 @@ static void test_detect_profile() {
   CHECK(unk.inject_sw_prefetch   == false, "unknown CPU: SW prefetch disabled");
   CHECK(empty.inject_sw_prefetch == false, "empty CPU: SW prefetch disabled");
 
-  // Oryon must enable SW prefetch and SVE guard.
+  // Oryon must enable SW prefetch; the SVE guard stays off everywhere.
   CHECK(oryon.inject_sw_prefetch  == true,  "Oryon: SW prefetch enabled");
-  CHECK(oryon.sve_guard == aarch64hetero::SveGuardMode::InnerOnly,  "Oryon: SVE guard enabled");
+  CHECK(oryon.sve_guard == aarch64hetero::SveGuardMode::Disabled,  "Oryon: SVE guard disabled");
 
-  // Ampere must not enable SVE guard (no SVE2 tail-folding).
+  // Ampere likewise (no SVE2 tail-folding to guard against).
   CHECK(ampere.sve_guard == aarch64hetero::SveGuardMode::Disabled, "Ampere: SVE guard disabled");
 }
 

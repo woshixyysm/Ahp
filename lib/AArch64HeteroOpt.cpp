@@ -92,6 +92,7 @@ STATISTIC(NumLoopsSkippedVec,       "Loops skipped: vectorized");
 STATISTIC(NumLoopsSkippedSVE,       "Loops skipped: SVE inner + dynamic TC");
 STATISTIC(NumLoopsSkippedBudget,    "Loops skipped: budget exhausted");
 STATISTIC(NumLoadsSkippedInvariant, "Loads skipped: loop-invariant");
+STATISTIC(NumLoadsSkippedWorkingSet, "Loads skipped: working set fits in L1");
 STATISTIC(NumLoadsSkippedStreaming, "Loads skipped: streaming/Ampere HW PF");
 STATISTIC(NumGatherLoopsDetected,   "Gather/SpMV pattern detected");
 STATISTIC(NumLaneHintsInjected,     "Loops with independent-lane hints");
@@ -577,7 +578,7 @@ AArch64HeteroOptPass::run(Function &F, FunctionAnalysisManager &FAM) {
           uint32_t L1KB = P.primary.cache.l1d_size_kb;
           int64_t WS = (TC > 0) ? (int64_t)TC * std::abs(Stride) : INT64_MAX;
           if (WS < (int64_t)(L1KB * 1024 / 2)) {
-            ++NumLoadsSkippedInvariant; // reuse existing counter (fits in cache)
+            ++NumLoadsSkippedWorkingSet;
             continue;
           }
         }

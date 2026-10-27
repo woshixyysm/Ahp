@@ -120,23 +120,34 @@ enum class SpMVReorderHint : uint8_t {
 // ---------------------------------------------------------------------------
 // SVE guard mode
 //
-// Replaces the old binary guard_sve_tail_fold flag with a richer policy:
+// HISTORY, and why every profile defaults to Disabled.
 //
-//   Full:        Skip ALL loops with dynamic TC on SVE2 targets.
-//                Original behavior – 34% SpMV regression.
+// An earlier revision of this pass claimed the LoopVectorizer's SVE
+// tail-folding could livelock on loops with a dynamic trip count, and skipped
+// prefetch injection for those loops. The claim does not survive inspection:
 //
-//   InnerOnly:   Skip SVE vectorized inner loops with dynamic TC.
-//                Outer loops and scalar inner loops are NOT skipped.
-//                This is the correct fix: SpMV's inner loop is SCALAR
-//                after the vectorizer gives up on it (ragged row lengths
-//                prevent vectorization). So InnerOnly = safe + profitable.
+//   - A tail-folded AArch64 loop exits on lane 0 of the active-lane mask, which
+//     by definition is `i < n` (unsigned). `i` advances by vscale*VF per
+//     iteration, so the predicate decreases monotonically and the loop always
+//     terminates. The mask predicates *data* (masked.load / masked.store), not
+//     the backedge.
+//   - Failing to prove a backedge-taken count makes the vectorizer bail out; it
+//     never produces a loop that does not terminate.
+//   - Oryon has no SVE at all (LLVM's oryon-1 features are NEON, AES, SHA2, SM4
+//     plus fusion tweaks), so scalable-vector loops cannot appear in its IR and
+//     the guard could never fire there anyway.
 //
-//   Disabled:    No guard (use only when LLVM upstream tail-fold bug is fixed).
+// The enum is kept because it costs nothing and a real SVE target may want to
+// experiment, but no shipped profile enables it.
+//
+//   Full:        Skip every loop with a dynamic trip count.
+//   InnerOnly:   Skip only SVE-vectorized inner loops with a dynamic trip count.
+//   Disabled:    No guard (the default for every profile).
 // ---------------------------------------------------------------------------
 enum class SveGuardMode : uint8_t {
-  Full,       ///< Skip all dynamic-TC loops (safe but over-conservative)
+  Full,       ///< Skip all dynamic-TC loops (not used by any profile)
   InnerOnly,  ///< Skip only SVE-vectorized inner loops with dynamic TC
-  Disabled,   ///< No guard
+  Disabled,   ///< No guard (default everywhere)
 };
 
 // ---------------------------------------------------------------------------
@@ -287,8 +298,8 @@ inline TargetProfile makeSnapdragon8EliteProfile() noexcept {
     .mem_latency_l1 = 4,
     .mem_latency_l2 = 16,
     .out_of_order   = true,
-    .has_sme        = true,
-    .has_sve2       = true,
+    .has_sme        = false, // Oryon implements neither SME nor SVE2
+    .has_sve2       = false,
     .has_mops       = true,
   };
   CacheParameters ecache{
@@ -312,13 +323,17 @@ inline TargetProfile makeSnapdragon8EliteProfile() noexcept {
     .mem_latency_l2 = 12,
     .out_of_order   = true,
     .has_sme        = false,
-    .has_sve2       = true,
+    .has_sve2       = false, // see the P-core note above
     .has_mops       = true,
   };
   return TargetProfile{
     .kind      = TargetKind::SnapdragonElite,
     .cpu_name  = "oryon-1",
-    .march_str = "armv9.2-a+sve2+sme+mops+crypto",
+    // Oryon implements neither SVE/SVE2 nor SME: LLVM's own oryon-1 feature
+    // set is NEON, AES, SHA2, SM4 and a few fusion tweaks. A "+sve2+sme"
+    // march string would produce instructions the core cannot execute, so
+    // point at the CPU name and let LLVM supply the feature set.
+    .march_str = "oryon-1",
     .primary   = CoreCluster{"Oryon-P", 4, pcache, ppipe},
     .efficiency = CoreCluster{"Oryon-E", 4, ecache, epipe},
     .inject_sw_prefetch  = true,
@@ -344,10 +359,10 @@ inline TargetProfile makeSnapdragon8EliteProfile() noexcept {
       .max_dist_bytes  = 8192,
       .per_loop_gather = 4,   // generous: SpMV gather is the hot path
     },
-    // InnerOnly: SpMV's inner loop is scalar (ragged rows prevent
-    // vectorization), so it is NOT skipped. Only SVE-vectorized inner
-    // loops with dynamic TC are skipped to avoid the tail-fold livelock.
-    .sve_guard = SveGuardMode::InnerOnly,
+    // Disabled: the tail-fold livelock this guard was written for does not
+    // exist (see the SveGuardMode comment above), and Oryon has no SVE, so
+    // scalable-vector loops cannot appear in its IR in the first place.
+    .sve_guard = SveGuardMode::Disabled,
 
     // Gather prefetch: NontemporalHint fires unconditionally (safe for
     // any col_idx distribution). Upgraded to SGP when reorder is detected.

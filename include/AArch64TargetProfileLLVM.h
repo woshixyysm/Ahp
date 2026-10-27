@@ -5,8 +5,11 @@
 
 // ---------------------------------------------------------------------------
 // Auto-detect LLVM availability unless the caller has pre-defined the macro.
-// Pre-defining AARCH64_HETERO_HAS_REAL_LLVM=1 before including this header
-// (e.g., in tests with a minimal StringRef stub) overrides auto-detection.
+// 1 = real LLVM headers are available and must be included; 0 = the caller
+// supplies its own minimal llvm::StringRef (the standalone tests do this, and
+// they must define it to 0 rather than rely on auto-detection: on a machine
+// that happens to have LLVM installed, detection would pick the real header
+// and collide with the stub).
 // ---------------------------------------------------------------------------
 #if !defined(AARCH64_HETERO_HAS_REAL_LLVM)
 #  if defined(__has_include) && __has_include("llvm/ADT/StringRef.h")
@@ -16,11 +19,14 @@
 #  endif
 #endif
 
+// Include the real header only when the caller says it is available. In
+// stub-based tests llvm::StringRef is already declared by the test file, and a
+// machine that merely *has* LLVM installed must not drag in the real header --
+// it would collide with the stub.
+//
+// The API below is compiled either way: the macro selects which StringRef is
+// used, it does not decide whether the header is usable.
 #if AARCH64_HETERO_HAS_REAL_LLVM
-
-// In real LLVM builds, include the real header.
-// In stub-based tests, llvm::StringRef is already declared by the test file.
-#if defined(__has_include) && __has_include("llvm/ADT/StringRef.h")
 #  include "llvm/ADT/StringRef.h"
 #endif
 
@@ -32,7 +38,7 @@ namespace aarch64hetero {
 ///   Ampere / Neoverse server-class → AmpereAltra profile
 ///     (SW prefetch disabled; strong HW prefetcher handles streaming)
 ///   Oryon / Cortex-X4 / Apple-M4  → SnapdragonElite profile
-///     (SW prefetch enabled; P-core focus; SVE tail-fold guard active)
+///     (SW prefetch enabled; P-core focus; Oryon has no SVE, so no vector guard)
 ///   Unknown CPU                    → AmpereAltra profile as conservative
 ///     server-side default (inject_sw_prefetch=false, safe).
 ///
@@ -53,7 +59,8 @@ inline TargetProfile detectProfile(llvm::StringRef cpu) noexcept {
   case HeteroProcFamily::NeoverseV1:
     return makeAmpereAltraProfile();
 
-  // Oryon / Cortex-X4 / Apple-M4: high-IPC big core with SME/SVE2.
+  // Oryon / Cortex-X4 / Apple-M4: high-IPC big core. None of them implement
+  // SVE/SVE2 or SME, so only the prefetch heuristics come from this profile.
   case HeteroProcFamily::Oryon:
   case HeteroProcFamily::CortexX4:
   case HeteroProcFamily::AppleM4:
@@ -69,5 +76,3 @@ inline TargetProfile detectProfile(llvm::StringRef cpu) noexcept {
 }
 
 } // namespace aarch64hetero
-
-#endif // AARCH64_HETERO_HAS_REAL_LLVM
